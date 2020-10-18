@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/base.xml"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.out</target>
+        <encoder>
+            <pattern>%d{yyyy/MM/dd HH:mm:ss} %-5level %msg%n</pattern>
+        </encoder>
+    </appender>
+    <appender name="APPLICATION_LOG_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>C:\tmp\logs\codegen.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>C:\tmp\logs\codegen-%d{yyyyMMdd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <charset>UTF-8</charset>
+            <pattern>%d{yyyy/MM/dd HH:mm:ss} %-5level %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root>
+        <level value="INFO" />
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="APPLICATION_LOG_FILE" />
+    </root>
+
+    <!-- Application Loggers -->
+    <logger name="com.mycompany" level="DEBUG" />
+
+</configuration>
