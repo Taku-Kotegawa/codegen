@@ -195,7 +195,7 @@ public class Application implements CommandLineRunner {
     }
 
     /**
-     * 画面定義に付随するtmeplateを配備する
+     * 画面定義に付随するtemplateを配備する
      *
      * @param _outputI18nDir      出力先（リソース）
      * @param _outputTemplatesDir 出力先（テンプレート）

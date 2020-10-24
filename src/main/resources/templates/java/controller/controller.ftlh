@@ -90,7 +90,7 @@ public class ${screenId?cap_first}Controller {
         Long recordsFiltered = 0L;
 
 
-        if (input.getDraft()) { // 下書き含む最新
+        if (input.getDraft() == null || input.getDraft()) { // 下書き含む最新
             Page<${screenId?cap_first}> ${screenId}Page = ${screenId}Service.findPageByInput(input);
             ${screenId}List.addAll(${screenId}Page.getContent());
             recordsFiltered = ${screenId}Page.getTotalElements();
@@ -158,13 +158,13 @@ public class ${screenId?cap_first}Controller {
         }
 
         for (${screenId?cap_first} ${screenId} : ${screenId}List) {
-            SimpleCsvBean row = beanMapper.map(${screenId}, SimpleCsvBean.class);
+            SimpleEntityCSVBean row = beanMapper.map(${screenId}, SimpleEntityCSVBean.class);
             row.setStatusLabel(Status.getByValue(${screenId}.getStatus()).getCodeLabel());
             list.add(row);
         }
 
         model.addAttribute("exportCsvData", list);
-        model.addAttribute("class", SimpleCsvBean.class);
+        model.addAttribute("class", SimpleEntityCSVBean.class);
     }
 
 
