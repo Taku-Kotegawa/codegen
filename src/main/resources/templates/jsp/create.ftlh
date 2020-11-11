@@ -506,40 +506,4 @@
     <!-- ここより上にメインコンテンツを記入 -->
   </div>
 </section>
-
-<%@ include file="/WEB-INF/views/common/includes/include-debug.jsp" %>
-
-<style>
-</style>
-
-<script>
-  $(function () {
-
-    $('.select2').select2();
-
-    $('.select2[multiple]').select2({
-      closeOnSelect: false
-    });
-
-    $('.select2-tags').select2({
-      tags: true,
-    });
-
-    $('.datetime').datetimepicker({
-      format: '',
-    });
-
-    $("#myInput").on("keyup", function () {
-      var value = $(this).val().toLowerCase();
-      $(".dropdown-menu li").filter(function () {
-        $(this).toggle($(this).text().toLowerCase().indexOf(value) > -1)
-      });
-    });
-  });
-
-  $(document).on('ontouched click', '.autocomplete', function () {
-    var text = $(this).data('autocomplete');
-    var target = $(this).data('target');
-    $('input[name="' + target + '"]').val(text);
-  });
-</script>
+<script src="${pageContext.request.contextPath}/resources/app/js/form-onload-default.js"></script>
