@@ -1,7 +1,9 @@
 package jp.co.stnet.cms.app.${screenId?lower_case};
 
 import com.github.dozermapper.core.Mapper;
-import com.orangesignal.csv.CsvConfig;
+import jp.co.stnet.cms.app.admin.upload.UploadForm;
+import jp.co.stnet.cms.app.${screenId?lower_case}.${screenId?cap_first}Form.Create;
+import jp.co.stnet.cms.app.${screenId?lower_case}.${screenId?cap_first}Form.Update;
 import jp.co.stnet.cms.domain.common.Constants;
 import jp.co.stnet.cms.domain.common.StateMap;
 import jp.co.stnet.cms.domain.common.datatables.DataTablesInputDraft;
@@ -10,12 +12,18 @@ import jp.co.stnet.cms.domain.common.datatables.OperationsUtil;
 import jp.co.stnet.cms.domain.common.message.MessageKeys;
 import jp.co.stnet.cms.domain.common.scheduled.CsvUtils;
 import jp.co.stnet.cms.domain.model.authentication.LoggedInUser;
+import jp.co.stnet.cms.domain.model.common.FileManaged;
 import jp.co.stnet.cms.domain.model.common.Status;
 import jp.co.stnet.cms.domain.model.example.${screenId?cap_first};
 import jp.co.stnet.cms.domain.model.example.${screenId?cap_first}Revision;
 import jp.co.stnet.cms.domain.service.common.FileManagedSharedService;
+import jp.co.stnet.cms.domain.service.example.MyBatchService;
 import jp.co.stnet.cms.domain.service.example.${screenId?cap_first}Service;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.launch.JobInstanceAlreadyExistsException;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.NoSuchJobException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -34,7 +42,10 @@ import org.terasoluna.gfw.web.token.transaction.TransactionTokenType;
 import javax.inject.Named;
 import javax.validation.groups.Default;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Controller
@@ -42,10 +53,19 @@ import java.util.List;
 @TransactionTokenCheck("${screenId?lower_case}")
 public class ${screenId?cap_first}Controller {
 
+    // JSPのパス設定
     private final String BASE_PATH = "${screenId?lower_case}";
     private final String JSP_LIST = BASE_PATH + "/list";
     private final String JSP_FORM = BASE_PATH + "/form";
     private final String JSP_VIEW = BASE_PATH + "/view";
+    private final String JSP_UPLOAD_FORM = "upload/form";
+    private final String JSP_UPLOAD_COMPLETE = "upload/complete";
+
+    // CSV/Excelのファイル名(拡張子除く)
+    private final String DOWNLOAD_FILENAME = "${screenId?lower_case}";
+
+    // アップロード用のインポートジョブID
+    private final String UPLOAD_JOB_ID = "job03";
 
     @Autowired
     ${screenId?cap_first}Service ${screenId}Service;
@@ -54,8 +74,14 @@ public class ${screenId?cap_first}Controller {
     FileManagedSharedService fileManagedSharedService;
 
     @Autowired
+    JobOperator jobOperator;
+
+    @Autowired
     @Named("CL_STATUS")
     CodeList statusCodeList;
+
+    @Autowired
+    private MyBatchService service; // 非同期処理のサンプル
 
     @Autowired
     Mapper beanMapper;
@@ -76,21 +102,18 @@ public class ${screenId?cap_first}Controller {
     /**
      * DataTables用のJSONの作成
      *
-     * @param input DataTablesから要求
+     * @param input DataTablesからの要求(Server-side処理)
      * @return JSON
      */
     @ResponseBody
     @GetMapping(value = "/list/json")
     public DataTablesOutput<${screenId?cap_first}ListRow> listJson(@Validated DataTablesInputDraft input) {
 
-        OperationsUtil op = new OperationsUtil(null);
-
-        List<${screenId?cap_first}ListRow> list = new ArrayList<>();
+        List<${screenId?cap_first}ListRow> listRows = new ArrayList<>();
         List<${screenId?cap_first}> ${screenId}List = new ArrayList<>();
         Long recordsFiltered = 0L;
 
-
-        if (input.getDraft() == null || input.getDraft()) { // 下書き含む最新
+        if (input.getDraft()) { // 下書き含む最新
             Page<${screenId?cap_first}> ${screenId}Page = ${screenId}Service.findPageByInput(input);
             ${screenId}List.addAll(${screenId}Page.getContent());
             recordsFiltered = ${screenId}Page.getTotalElements();
@@ -103,19 +126,17 @@ public class ${screenId?cap_first}Controller {
             recordsFiltered = ${screenId}Page2.getTotalElements();
         }
 
-        for (${screenId?cap_first} ${screenId} : ${screenId}List) {
-            ${screenId?cap_first}ListRow ${screenId}ListRow = beanMapper.map(${screenId}, ${screenId?cap_first}ListRow.class);
-            ${screenId}ListRow.setOperations(getToggleButton(${screenId}.getId().toString(), op));
-            ${screenId}ListRow.setDT_RowId(${screenId}.getId().toString());
-
+        for (${screenId?cap_first}Bean bean : getBeanList(${screenId}List)) {
+            ${screenId?cap_first}ListRow ${screenId}ListRow = beanMapper.map(bean, ${screenId?cap_first}ListRow.class);
+            ${screenId}ListRow.setOperations(getToggleButton(bean.getId().toString(), op(null)));
+            ${screenId}ListRow.setDT_RowId(bean.getId().toString());
             // ステータスラベル
-            ${screenId}ListRow.setStatusLabel(Status.getByValue(${screenId}.getStatus()).getCodeLabel());
-
-            list.add(${screenId}ListRow);
+            ${screenId}ListRow.setStatusLabel(Status.getByValue(bean.getStatus()).getCodeLabel());
+            listRows.add(${screenId}ListRow);
         }
 
         DataTablesOutput<${screenId?cap_first}ListRow> output = new DataTablesOutput<>();
-        output.setData(list);
+        output.setData(listRows);
         output.setDraw(input.getDraw());
         output.setRecordsTotal(0);
         output.setRecordsFiltered(recordsFiltered);
@@ -123,30 +144,65 @@ public class ${screenId?cap_first}Controller {
         return output;
     }
 
+    /**
+     * CSVファイルのダウンロード
+     * @param input DataTablesからの要求(Server-side処理)
+     * @param model モデル
+     * @return ファイルダウンロード用View
+     */
     @GetMapping(value = "/list/csv")
     public String listCsv(@Validated DataTablesInputDraft input, Model model) {
-        setModelForCsv(input, model);
-        model.addAttribute("csvConfig", CsvUtils.getCsvDefault());
-        model.addAttribute("csvFileName", "${screenId?cap_first}.csv");
-        return "csvDownloadView";
-    }
-
-    @GetMapping(value = "/list/tsv")
-    public String listTsv(@Validated DataTablesInputDraft input, Model model) {
-        setModelForCsv(input, model);
-        model.addAttribute("csvConfig", CsvUtils.getTsvDefault());
-        model.addAttribute("csvFileName", "${screenId?cap_first}.tsv");
-        return "csvDownloadView";
-    }
-
-    private void setModelForCsv(DataTablesInputDraft input, Model model) {
         input.setStart(0);
         input.setLength(Constants.CSV.MAX_LENGTH);
+        setModelForCsv(input, model);
+        model.addAttribute("csvConfig", CsvUtils.getCsvDefault());
+        model.addAttribute("csvFileName", DOWNLOAD_FILENAME + ".csv");
+        return "csvDownloadView";
+    }
 
-        List<${screenId?cap_first}CsvBean> list = new ArrayList<>();
+    /**
+     * TSVファイルのダウンロード
+     * @param input DataTablesからの要求(Server-side処理)
+     * @param model モデル
+     * @return ファイルダウンロード用View
+     */
+    @GetMapping(value = "/list/tsv")
+    public String listTsv(@Validated DataTablesInputDraft input, Model model) {
+        input.setStart(0);
+        input.setLength(Constants.CSV.MAX_LENGTH);
+        setModelForCsv(input, model);
+        model.addAttribute("csvConfig", CsvUtils.getTsvDefault());
+        model.addAttribute("csvFileName", DOWNLOAD_FILENAME + ".tsv");
+        return "csvDownloadView";
+    }
+
+    /**
+     * Excelファイルのダウンロード
+     * @param input DataTablesからの要求(Server-side処理)
+     * @param model モデル
+     * @return ファイルダウンロード用View
+     */
+    @GetMapping(value = "/list/excel")
+    public String listExcel(@Validated DataTablesInputDraft input, Model model) {
+        input.setStart(0);
+        input.setLength(Constants.EXCEL.MAX_LENGTH);
+        // TODO: 汎用的な仕組みに改造が必要
+        model.addAttribute("list", ${screenId}Service.findPageByInput(input).getContent());
+        model.addAttribute("excelFileName", DOWNLOAD_FILENAME + ".xlsx");
+        return "excelDownloadView";
+    }
+
+    /**
+     * csvDownloadViewに渡すデータ準備
+     * @param input DataTablesからの要求(Server-side処理)
+     * @param model データをセットするモデル
+     */
+    private void setModelForCsv(DataTablesInputDraft input, Model model) {
+
+        List<${screenId?cap_first}CsvBean> csvBeans = new ArrayList<>();
         List<${screenId?cap_first}> ${screenId}List = new ArrayList<>();
 
-        if (input.getDraft()) { // 下書き含む最新
+        if (input.getDraft() == null || input.getDraft()) { // 下書き含む最新
             Page<${screenId?cap_first}> ${screenId}Page = ${screenId}Service.findPageByInput(input);
             ${screenId}List.addAll(${screenId}Page.getContent());
 
@@ -157,18 +213,139 @@ public class ${screenId?cap_first}Controller {
             }
         }
 
-        for (${screenId?cap_first} ${screenId} : ${screenId}List) {
-            SimpleEntityCSVBean row = beanMapper.map(${screenId}, SimpleEntityCSVBean.class);
+        for (${screenId?cap_first} ${screenId} : getBeanList(${screenId}List)) {
+            ${screenId?cap_first}CsvBean row = beanMapper.map(${screenId}, ${screenId?cap_first}CsvBean.class);
+            customMap(row, ${screenId});
             row.setStatusLabel(Status.getByValue(${screenId}.getStatus()).getCodeLabel());
-            list.add(row);
+            csvBeans.add(row);
         }
 
-        model.addAttribute("exportCsvData", list);
-        model.addAttribute("class", SimpleEntityCSVBean.class);
+        model.addAttribute("exportCsvData", csvBeans);
+        model.addAttribute("class", ${screenId?cap_first}CsvBean.class);
     }
 
+    /**
+     * 一覧画面、CSVファイルのためのデータ変換
+     *
+     * @param entities
+     * @return
+     */
+    private List<${screenId?cap_first}Bean> getBeanList(List<${screenId?cap_first}> entities) {
+        List<${screenId?cap_first}Bean> beans = new ArrayList<>();
+        for(${screenId?cap_first} entity : entities) {
+            ${screenId?cap_first}Bean bean = beanMapper.map(entity, ${screenId?cap_first}Bean.class);
 
+            // ラジオボタン(真偽値)ラベル
+            if (entity.getRadio01() != null) {
+                bean.setRadio01Label(entity.getRadio01() ? "はい" : "いいえ");
+            }
+
+            // チェックボックス(文字列)ラベル
+            if (entity.getCheckbox01() != null) {
+                bean.setCheckbox01Label("はい".equals(entity.getCheckbox01()) ? "☑" : "□"  + "利用規約に合意する");
+            }
+
+            // チェックボックス(複数の値)ラベル
+            if (entity.getCheckbox02() != null) {
+                String s = entity.getCheckbox02().stream()
+                        .map(str -> statusCodeList.asMap().get(str))
+                        .collect(Collectors.joining(", "));
+                bean.setCheckbox02Label(s);
+            }
+
+            // セレクト(単一の値)ラベル
+            if (entity.getSelect01() != null) {
+                bean.setSelect01Label(statusCodeList.asMap().get(entity.getSelect01()));
+            }
+
+            // セレクト(複数の値)
+            if (entity.getSelect02() != null) {
+                String t = entity.getSelect02().stream()
+                        .map(str -> statusCodeList.asMap().get(str))
+                        .collect(Collectors.joining(", "));
+                bean.setSelect02Label(t);
+            }
+
+            // セレクト(単一の値, select2)
+            if (entity.getSelect03() != null) {
+                bean.setSelect03Label(statusCodeList.asMap().get(entity.getSelect03()));
+            }
+
+            // セレクト(複数の値, select2)
+            String u = entity.getSelect04().stream()
+                    .map(str -> statusCodeList.asMap().get(str))
+                    .collect(Collectors.joining(", "));
+            bean.setSelect04Label(u);
+
+            // コンボボックス(単一の値, Select2)
+            if (entity.getCombobox02() != null) {
+                bean.setCombobox02Label(statusCodeList.asMap().get(entity.getCombobox02()));
+            }
+
+            // コンボボックス(複数の値, Select2)
+            if (entity.getCombobox03() != null) {
+                String v = entity.getCombobox03().stream()
+                        .map(str -> statusCodeList.asMap().get(str))
+                        .collect(Collectors.joining(", "));
+                bean.setCombobox03Label(v);
+            }
+
+            // 添付ファイル名
+//            if (entity.getAttachedFile01Uuid() != null) {
+//                bean.setAttachedFile01Managed(fileManagedSharedService.findByUuid(entity.getAttachedFile01Uuid()));
+//                if (bean.getAttachedFile01Managed() != null) {
+//                    bean.setAttachedFile01FileName(bean.getAttachedFile01Managed().getOriginalFilename());
+//                }
+//            }
+
+            if (entity.getAttachedFile01Managed() != null) {
+                bean.setAttachedFile01FileName(bean.getAttachedFile01Managed().getOriginalFilename());
+            }
+
+
+            beans.add(bean);
+        }
+        return beans;
+    }
+
+    /**
+     * CSVファイル固有要件のデータ変換
+     * @param row 変換後のCSVビーン
+     * @param ${screenId} エンティティ
+     */
+    private void customMap(${screenId?cap_first}CsvBean row, ${screenId?cap_first} ${screenId}) {
+
+    }
+
+    /**
+     * リビジョンテーブルのデータを通常のエンティティに変換
+     * @param entities リビジョンエンティティのリスト
+     * @return エンティティのリスト
+     */
+    private List<${screenId?cap_first}Bean> getBeanListByRev(List<${screenId?cap_first}Revision> entities) {
+        List<${screenId?cap_first}> beans = new ArrayList<>();
+        for(${screenId?cap_first}Revision entity : entities) {
+            ${screenId?cap_first} bean = beanMapper.map(entities, ${screenId?cap_first}.class);
+            beans.add(bean);
+        }
+        return getBeanList(beans);
+    }
+
+    /**
+     * 一覧画面のトグルボタンHTMLの生成
+     * @param id エンティティの内部ID
+     * @param op OperationsUtil リンクURLを生成するクラス
+     * @return HTML
+     */
     private String getToggleButton(String id, OperationsUtil op) {
+
+        // fixedColumnを使うとトグルボタンは使えない。
+//        StringBuffer link = new StringBuffer();
+//        link.append("<div class=\"whitespace-nowrap\">");
+//        link.append("<a class=\"whitespace-nowrap\" href=\"" + op.getEditUrl(id) + "\">" + op.getLABEL_EDIT() + "</a>");
+//        link.append(" | ");
+//        link.append("<a class=\"whitespace-nowrap\" href=\"" + op.getViewUrl(id) + "\">" + op.getLABEL_VIEW() + "</a></li>");
+//        link.append("</div>");
 
         StringBuffer link = new StringBuffer();
         link.append("<div class=\"btn-group\">");
@@ -185,8 +362,98 @@ public class ${screenId?cap_first}Controller {
         return link.toString();
     }
 
-    protected OperationsUtil op() {
+    private OperationsUtil op() {
         return new OperationsUtil(BASE_PATH);
+    }
+
+    private OperationsUtil op(String param) {
+        return new OperationsUtil(param);
+    }
+
+    /**
+     * ダウンロード
+     */
+    @GetMapping("{uuid}/download")
+    public String download(
+            Model model,
+            @PathVariable("uuid") String uuid,
+            @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        ${screenId}Service.hasAuthority(Constants.OPERATION.DOWNLOAD, loggedInUser);
+
+        model.addAttribute(fileManagedSharedService.findByUuid(uuid));
+        return "fileManagedDownloadView";
+    }
+
+    /**
+     * 一括削除
+     */
+    @PostMapping("bulk_delete")
+    public String bulkDelete(Model model, String selectedKey, RedirectAttributes redirect, @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        ${screenId}Service.hasAuthority(Constants.OPERATION.BULK_DELETE, loggedInUser);
+
+        String[] strKeys = selectedKey.split(",");
+        List<${screenId?cap_first}> deleteEntities = new ArrayList<>();
+        for(String key : strKeys) {
+            ${screenId?cap_first} entity = ${screenId}Service.findById(Long.valueOf(key));
+            if (entity.getStatus().equals(Status.INVALID.getCodeValue())) {
+                deleteEntities.add(entity);
+            }
+        }
+
+        ${screenId}Service.delete(deleteEntities);
+
+        redirect.addFlashAttribute(ResultMessages.info().add(MessageKeys.I_CM_FW_0003));
+        return "redirect:" + op().getListUrl();
+    }
+
+    /**
+     * 一括無効化(有効データのみ対象)
+     */
+    @PostMapping("bulk_invalid")
+    public String bulkInvalid(Model model, String selectedKey, RedirectAttributes redirect, @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        ${screenId}Service.hasAuthority(Constants.OPERATION.BULK_INVALID, loggedInUser);
+
+        String[] strKeys = selectedKey.split(",");
+        List<Long> ids = new ArrayList<>();
+        for(String key : strKeys) {
+            Long id = Long.valueOf(key);
+            ${screenId?cap_first} entity = ${screenId}Service.findById(id);
+            if (entity.getStatus().equals(Status.VALID.getCodeValue())) {
+                ids.add(id);
+            }
+        }
+
+        ${screenId}Service.invalid(ids);
+
+        redirect.addFlashAttribute(ResultMessages.info().add(MessageKeys.I_CM_FW_0002));
+        return "redirect:" + op().getListUrl();
+    }
+
+    /**
+     * 一括有効化(無効データのみ対象)
+     */
+    @PostMapping("bulk_valid")
+    public String bulkValid(Model model, String selectedKey, RedirectAttributes redirect, @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        ${screenId}Service.hasAuthority(Constants.OPERATION.BULK_VALID, loggedInUser);
+
+        String[] strKeys = selectedKey.split(",");
+        List<Long> ids = new ArrayList<>();
+        for(String key : strKeys) {
+            Long id = Long.valueOf(key);
+            ${screenId?cap_first} entity = ${screenId}Service.findById(id);
+            if (entity.getStatus().equals(Status.INVALID.getCodeValue())) {
+                ids.add(id);
+            }
+        }
+
+        ${screenId}Service.valid(ids);
+
+        redirect.addFlashAttribute(ResultMessages.info().add(MessageKeys.I_CM_FW_0002));
+        return "redirect:" + op().getListUrl();
     }
 
     /**
@@ -207,9 +474,7 @@ public class ${screenId?cap_first}Controller {
             form.setId(null);
         }
 
-        if (form.getAttachedFile01Uuid() != null) {
-            form.setAttachedFile01Managed(fileManagedSharedService.findByUuid(form.getAttachedFile01Uuid()));
-        }
+        setFileManagedToForm(form);
 
         model.addAttribute("buttonState", getButtonStateMap(Constants.OPERATION.CREATE, null).asMap());
         model.addAttribute("fieldState", getFiledStateMap(Constants.OPERATION.CREATE, null).asMap());
@@ -219,11 +484,33 @@ public class ${screenId?cap_first}Controller {
     }
 
     /**
+     * UUIDからFileManagedオブジェクトを取得し、formにセットする。
+     * @param form フォーム
+     */
+    private void setFileManagedToForm(${screenId?cap_first}Form form) {
+        // TODO ファイルフィールドごとに調整
+        if (form.getAttachedFile01Uuid() != null) {
+            form.setAttachedFile01Managed(fileManagedSharedService.findByUuid(form.getAttachedFile01Uuid()));
+        }
+    }
+
+//    /**
+//     * UUIDからFileManagedオブジェクトを取得し、Entityにセットする。
+//     * @param entity エンティティ
+//     */
+//    private void setFileManagedToEntity(${screenId?cap_first} entity) {
+//        // TODO ファイルフィールドごとに調整
+//        if (entity.getAttachedFile01Uuid() != null) {
+//            entity.setAttachedFile01Managed(fileManagedSharedService.findByUuid(entity.getAttachedFile01Uuid()));
+//        }
+//    }
+
+    /**
      * 新規登録
      */
     @PostMapping(value = "create")
     @TransactionTokenCheck
-    public String create(@Validated({${screenId?cap_first}Form.Create.class, Default.class}) ${screenId?cap_first}Form form,
+    public String create(@Validated({Create.class, Default.class}) ${screenId?cap_first}Form form,
                          BindingResult bindingResult,
                          Model model,
                          RedirectAttributes redirect,
@@ -281,9 +568,7 @@ public class ${screenId?cap_first}Controller {
             beanMapper.map(${screenId}, form);
         }
 
-        if (form.getAttachedFile01Uuid() != null) {
-            form.setAttachedFile01Managed(fileManagedSharedService.findByUuid(form.getAttachedFile01Uuid()));
-        }
+        setFileManagedToForm(form);
 
         model.addAttribute("buttonState", getButtonStateMap(Constants.OPERATION.SAVE, ${screenId}).asMap());
         model.addAttribute("fieldState", getFiledStateMap(Constants.OPERATION.SAVE, ${screenId}).asMap());
@@ -297,7 +582,7 @@ public class ${screenId?cap_first}Controller {
      */
     @PostMapping(value = "{id}/update")
     @TransactionTokenCheck
-    public String update(@Validated({${screenId?cap_first}Form.Update.class, Default.class}) ${screenId?cap_first}Form form,
+    public String update(@Validated({Update.class, Default.class}) ${screenId?cap_first}Form form,
                          BindingResult bindingResult,
                          Model model,
                          RedirectAttributes redirect,
@@ -382,6 +667,7 @@ public class ${screenId?cap_first}Controller {
 
         ${screenId}Service.hasAuthority(Constants.OPERATION.VALID, loggedInUser);
 
+        // 存在チェックを兼ねる
         ${screenId?cap_first} entity = ${screenId}Service.findById(id);
 
         try {
@@ -405,7 +691,9 @@ public class ${screenId?cap_first}Controller {
 
         ${screenId}Service.hasAuthority(Constants.OPERATION.CANCEL_DRAFT, loggedInUser);
 
-        ${screenId?cap_first} entity = null;
+        // 存在チェックを兼ねる
+        ${screenId?cap_first} entity = ${screenId}Service.findById(id);
+
         try {
             entity = ${screenId}Service.cancelDraft(id);
         } catch (BusinessException e) {
@@ -432,8 +720,11 @@ public class ${screenId?cap_first}Controller {
 
         ${screenId}Service.hasAuthority(Constants.OPERATION.VIEW, loggedInUser);
 
+        // ${screenId?cap_first} ${screenId} = ${screenId}Service.findById(id);　// TODO: リビジョン管理がない場合はシンプルにできる
+
         ${screenId?cap_first} ${screenId};
-        if ( rev == null) {
+
+        if (rev == null) {
             // 下書きを含む最新
             ${screenId} = ${screenId}Service.findById(id);
 
@@ -446,32 +737,15 @@ public class ${screenId?cap_first}Controller {
             ${screenId} = beanMapper.map(${screenId}Service.findByRid(rev), ${screenId?cap_first}.class);
         }
 
-        model.addAttribute("${screenId}", ${screenId});
+//        setFileManagedToEntity(${screenId});
 
-        if (${screenId}.getAttachedFile01Uuid() != null) {
-            ${screenId}.setAttachedFile01Managed(fileManagedSharedService.findByUuid(${screenId}.getAttachedFile01Uuid()));
-        }
+        model.addAttribute("${screenId}", ${screenId});
 
         model.addAttribute("buttonState", getButtonStateMap(Constants.OPERATION.VIEW, ${screenId}).asMap());
         model.addAttribute("fieldState", getFiledStateMap(Constants.OPERATION.VIEW, ${screenId}).asMap());
         model.addAttribute("op", op());
 
         return JSP_FORM;
-    }
-
-    /**
-     * ダウンロード
-     */
-    @GetMapping("{uuid}/download")
-    public String download(
-            Model model,
-            @PathVariable("uuid") String uuid,
-            @AuthenticationPrincipal LoggedInUser loggedInUser) {
-
-        ${screenId}Service.hasAuthority(Constants.OPERATION.DOWNLOAD, loggedInUser);
-
-        model.addAttribute(fileManagedSharedService.findByUuid(uuid));
-        return "fileManagedDownloadView";
     }
 
     /**
@@ -494,6 +768,7 @@ public class ${screenId?cap_first}Controller {
         includeKeys.add(Constants.BUTTON.UNLOCK);
         includeKeys.add(Constants.BUTTON.SAVE_DRAFT);
         includeKeys.add(Constants.BUTTON.CANCEL_DRAFT);
+        includeKeys.add(Constants.BUTTON.COPY);
 
         StateMap buttonState = new StateMap(Default.class, includeKeys, new ArrayList<>());
 
@@ -514,6 +789,7 @@ public class ${screenId?cap_first}Controller {
                 buttonState.setViewTrue(Constants.BUTTON.SAVE_DRAFT);
                 buttonState.setViewTrue(Constants.BUTTON.SAVE);
                 buttonState.setViewTrue(Constants.BUTTON.VIEW);
+                buttonState.setViewTrue(Constants.BUTTON.COPY);
             }
 
             if (Status.VALID.getCodeValue().equals(record.getStatus())) {
@@ -521,12 +797,14 @@ public class ${screenId?cap_first}Controller {
                 buttonState.setViewTrue(Constants.BUTTON.SAVE);
                 buttonState.setViewTrue(Constants.BUTTON.VIEW);
                 buttonState.setViewTrue(Constants.BUTTON.INVALID);
+                buttonState.setViewTrue(Constants.BUTTON.COPY);
             }
 
             if (Status.INVALID.getCodeValue().equals(record.getStatus())) {
                 buttonState.setViewTrue(Constants.BUTTON.VIEW);
                 buttonState.setViewTrue(Constants.BUTTON.VALID);
                 buttonState.setViewTrue(Constants.BUTTON.DELETE);
+                buttonState.setViewTrue(Constants.BUTTON.COPY);
             }
 
         }
@@ -539,12 +817,14 @@ public class ${screenId?cap_first}Controller {
                 buttonState.setViewTrue(Constants.BUTTON.GOTOUPDATE);
                 buttonState.setViewTrue(Constants.BUTTON.INVALID);
                 buttonState.setViewTrue(Constants.BUTTON.UNLOCK);
+                buttonState.setViewTrue(Constants.BUTTON.COPY);
             }
 
             // スタータスが無効
             if (Status.INVALID.getCodeValue().equals(record.getStatus())) {
                 buttonState.setViewTrue(Constants.BUTTON.VALID);
                 buttonState.setViewTrue(Constants.BUTTON.DELETE);
+                buttonState.setViewTrue(Constants.BUTTON.COPY);
             }
         }
 
@@ -585,6 +865,78 @@ public class ${screenId?cap_first}Controller {
         }
 
         return fieldState;
+    }
+
+    /**
+     * アップロードファイル指定画面の表示
+     */
+    @GetMapping(value = "upload", params = "form")
+    public String uploadForm(@ModelAttribute UploadForm form, Model model,
+                             @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        form.setJobName("job03");
+
+        FileManaged uploadFileManaged = fileManagedSharedService.findByUuid(form.getUploadFileUuid());
+        form.setUploadFileManaged(uploadFileManaged);
+
+        model.addAttribute("pageTitle", "Import Simple Entity");
+        model.addAttribute("referer", "list");
+
+        return JSP_UPLOAD_FORM;
+    }
+
+    /**
+     * アップロード処理(バッチ実行)
+     */
+    @PostMapping(value = "upload")
+    public String upload(@Validated UploadForm form, BindingResult result, Model model,
+                         RedirectAttributes redirectAttributes,
+                         @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        final String jobName = UPLOAD_JOB_ID;
+        Long jobExecutionId = null;
+
+        if (result.hasErrors()) {
+            return uploadForm(form, model, loggedInUser);
+        }
+
+        FileManaged uploadFile = fileManagedSharedService.findByUuid(form.getUploadFileUuid());
+        String uploadFileAbsolutePath = fileManagedSharedService.getFileStoreBaseDir() + uploadFile.getUri();
+        String jobParams = "inputFile=" + uploadFileAbsolutePath;
+
+
+        if (!jobName.equals(form.getJobName())) {
+            return uploadForm(form, model, loggedInUser);
+        }
+
+
+        try {
+            jobExecutionId = jobOperator.start(jobName, jobParams);
+
+        } catch (NoSuchJobException | JobInstanceAlreadyExistsException | JobParametersInvalidException e) {
+            e.printStackTrace();
+
+            // メッセージをセットして、フォーム画面に戻る。
+
+        }
+
+        redirectAttributes.addAttribute("jobName", jobName);
+        redirectAttributes.addAttribute("jobExecutionId", jobExecutionId);
+
+        return "redirect:upload?complete";
+    }
+
+    /**
+     * アップロード完了画面
+     */
+    @GetMapping(value = "upload", params = "complete")
+    public String uploadComplete(Model model, @RequestParam Map<String, String> params, @AuthenticationPrincipal LoggedInUser loggedInUser) {
+
+        model.addAttribute("returnBackBtn", "一覧画面に戻る");
+        model.addAttribute("returnBackUrl", op().getListUrl());
+        model.addAttribute("jobName", params.get("jobName"));
+        model.addAttribute("jobExecutionId", params.get("jobExecutionId"));
+        return JSP_UPLOAD_COMPLETE;
     }
 
 }
